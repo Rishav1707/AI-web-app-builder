@@ -22,74 +22,100 @@ const modelName = "gpt-4o-mini";
 const client = new OpenAI({ baseURL: endpoint, apiKey: token });
 
 let previousWebsiteContent = null;
-
-// List of questions to ask
-const questions = [
-  "What type of website do you want to create? (e.g., blog, e-commerce, portfolio)",
-  "What's the name of your website?",
-  "What's the main purpose of your website?",
-  "Who is your target audience?",
-  "What key features do you want on your website?",
-];
+let currentQuestionIndex = 0;
+let questions = [];
+let userResponses = [];
 
 io.on("connection", (socket) => {
-  console.log("A user connected");
+  socket.on("start questionnaire", async () => {
+    try {
+      const prompt = `
+        Ask some necessary questions that are required for you to get some context about the website.
+        Respond with questions only.
+        The questions should not be more than 5.
+      `;
 
-  // Store current question index and user responses
-  let currentQuestionIndex = 0;
-  let userResponses = [];
+      const completion = await client.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a professional web developer who create incredible website for the restaurents and cafes.",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 1.0,
+        top_p: 1.0,
+        max_tokens: 1000,
+        model: modelName,
+      });
 
-  // Start the questionnaire by asking the first question
-  socket.on("start questionnaire", () => {
-    if (currentQuestionIndex < questions.length) {
-      socket.emit("question", questions[currentQuestionIndex]);
+      questions = completion.choices[0].message.content
+        .split("\n")
+        .filter(Boolean);
+      currentQuestionIndex = 0;
+      userResponses = [];
+
+      if (questions.length > 0) {
+        socket.emit("question", questions[currentQuestionIndex]);
+      } else {
+        socket.emit(
+          "chat message",
+          "No questions generated. Please provide details manually."
+        );
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      socket.emit(
+        "chat message",
+        "AI: Sorry, I encountered an error while generating questions."
+      );
     }
   });
 
-  // Handle user's answer to each question
   socket.on("answer", (answer) => {
-    // Store the answer
     userResponses.push(answer);
-
-    // Move to the next question
     currentQuestionIndex++;
 
     if (currentQuestionIndex < questions.length) {
-      // Ask the next question
       socket.emit("question", questions[currentQuestionIndex]);
     } else {
-      // All questions answered, generate website content
-      generateWebsiteContent(userResponses, socket);
+      generateWebsiteContent(userResponses, questions, socket);
     }
   });
 
-  // Generate website content based on user responses
-  const generateWebsiteContent = async (responses, socket) => {
+  const generateWebsiteContent = async (responses, questions, socket) => {
     try {
-      // Use the collected responses to generate a website
-      const [
-        websiteType,
-        websiteName,
-        websitePurpose,
-        targetAudience,
-        features,
-      ] = responses;
-
       const prompt = `
         Based on the following details:
-        - Type of website: ${websiteType}
-        - Name: ${websiteName}
-        - Purpose: ${websitePurpose}
-        - Target audience: ${targetAudience}
-        - Key features: ${features}
-        Generate a responsive HTML structure using Tailwind CSS for styling based on the user's input.
+        ${questions
+          .map(
+            (question, index) =>
+              `Ques ${index + 1}: ${question}\nAns: ${responses[index]}`
+          )
+          .join("\n")}
+        Generate a responsive HTML structure using Tailwind CSS for styling and JavaScript for adding functionality based on the user's input.
+        Default text color should be black.
+        While creating website just keep few key components in mind:
+        - It include Header & Menu
+        - It include Images
+        - It include content
+        - It include testimonials
+        - It include Footer
+        - It include logo
+        - It include CTA
+        - It include Forms
+        - It include FAQ
       `;
 
-      // Request the model to generate the website content
       const completion = await client.chat.completions.create({
         messages: [
-          { role: "system", content: "You are a professional web developer." },
-          { role: "user", content: prompt }, // User responses as the input
+          {
+            role: "system",
+            content:
+              "You are a professional web developer who create incredible website for the restaurents and cafes.",
+          },
+          { role: "user", content: prompt },
           {
             role: "user",
             content: `
@@ -102,13 +128,12 @@ io.on("connection", (socket) => {
         ],
         temperature: 1.0,
         top_p: 1.0,
-        max_tokens: 1000,
+        max_tokens: 2000,
         model: modelName,
       });
 
       const generatedContent = completion.choices[0].message.content;
 
-      // Calculate the diff with previous content (if exists)
       if (previousWebsiteContent) {
         const changes = diff.diffWords(
           previousWebsiteContent,
@@ -117,11 +142,9 @@ io.on("connection", (socket) => {
         socket.emit("website update", { changes });
       }
 
-      previousWebsiteContent = generatedContent; // Update previous content for future diff
-
-      // Send the generated website content to the client
+      previousWebsiteContent = generatedContent;
       socket.emit("chat message", generatedContent);
-      socket.emit("questionnaire complete"); // Notify that questionnaire is complete
+      socket.emit("questionnaire complete");
     } catch (error) {
       console.error("Error:", error);
       socket.emit(
@@ -131,7 +154,6 @@ io.on("connection", (socket) => {
     }
   };
 
-  // Handle changes requested by the user after the website content has been generated
   socket.on("request change", async (changeRequest) => {
     if (!previousWebsiteContent) {
       socket.emit("chat message", "AI: Please generate the website first.");
@@ -148,8 +170,12 @@ io.on("connection", (socket) => {
 
       const completion = await client.chat.completions.create({
         messages: [
-          { role: "system", content: "You are a professional web developer." },
-          { role: "user", content: prompt }, // User's change request as the input
+          {
+            role: "system",
+            content:
+              "You are a professional web developer who create incredible website for the restaurents and cafes.",
+          },
+          { role: "user", content: prompt },
           {
             role: "user",
             content: `
@@ -162,17 +188,16 @@ io.on("connection", (socket) => {
         ],
         temperature: 1.0,
         top_p: 1.0,
-        max_tokens: 1000,
+        max_tokens: 2000,
         model: modelName,
       });
 
       const modifiedContent = completion.choices[0].message.content;
 
-      // Calculate the diff with previous content
       const changes = diff.diffWords(previousWebsiteContent, modifiedContent);
       socket.emit("website update", { changes });
 
-      previousWebsiteContent = modifiedContent; // Update the previous content with the modified one
+      previousWebsiteContent = modifiedContent;
       socket.emit("chat message", modifiedContent);
     } catch (error) {
       console.error("Error:", error);
